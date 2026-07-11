@@ -31,6 +31,9 @@ Desktop.ini
 *.hex
 *.bin
 
+# Watt Toolkit 加速工具（不是学习内容）
+WattToolkit/
+
 # IDE 文件夹
 .vscode/
 .idea/
