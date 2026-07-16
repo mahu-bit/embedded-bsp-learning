@@ -42,3 +42,9 @@ WattToolkit/
 *.scvd
 Debug/
 Release/
+
+# STM32 资料盘（太大，不传 git）
+stm32H562/ziliao/
+
+# STM32 编译产物
+stm32h562_test/build/
