@@ -1,0 +1,154 @@
+============================================================
+  STM32H562 踩坑记录
+  开发板: 正点原子 Mini STM32H562VIT6 (Cortex-M33)
+  记录时间: 2026-07 ~ 2026-08
+============================================================
+
+目录:
+  一、MDK 工程配置坑（hal/0-0 → 0-1）
+  二、STM32H5 vs F4 硬件差异
+  三、烧录与调试坑
+  四、CMake + GCC 命令行工程坑
+
+========================================================================
+  一、MDK 工程配置坑（hal/0-0 失败 → 0-1 成功）
+========================================================================
+
+### 坑1: 芯片头文件用错（最致命！）
+
+问题: 0-0 用了 stm32h563xx.h + startup_stm32h563xx.s
+      0-1 改为 stm32h562xx.h + startup_stm32h562xx.s
+
+原因: 开发板芯片是 STM32H562VIT6，不是 H563。
+      H563 和 H562 虽然都是 H5 系列，但外设寄存器定义有差异。
+      CubeMX 新建工程时第一步就要选对芯片型号。
+
+教训: 芯片型号一个字都不能差！H562 ≠ H563
+
+
+### 坑2: HAL 模块宏没开全
+
+问题: 0-0 的 stm32h5xx_hal_conf.h 只开了:
+        #define HAL_USART_MODULE_ENABLED
+      漏了:
+        #define HAL_UART_MODULE_ENABLED
+
+后果: UART_HandleTypeDef 类型未定义 → 编译报 10 个 error
+      main.c 和 usart.c 编译失败，整个工程挂了
+
+原因: STM32H5 的 HAL 库把 UART 和 USART 分成了两个独立模块。
+      正点原子的 SYSTEM/usart 驱动虽然名字叫 "usart"，
+      但实际用的是 UART_HandleTypeDef + HAL_UART_xxx() 函数。
+
+      UART_HandleTypeDef 定义在 stm32h5xx_hal_uart.h，
+      不开 HAL_UART_MODULE_ENABLED 就不会 include 这个头文件。
+
+教训: stm32h5xx_hal_conf.h 里所有用到的模块都要取消注释。
+      至少需要: HAL_MODULE_ENABLED, HAL_UART_MODULE_ENABLED,
+      HAL_USART_MODULE_ENABLED, HAL_GPIO_MODULE_ENABLED,
+      HAL_RCC_MODULE_ENABLED, HAL_CORTEX_MODULE_ENABLED,
+      HAL_DMA_MODULE_ENABLED, HAL_PWR_MODULE_ENABLED,
+      HAL_ICACHE_MODULE_ENABLED
+
+
+### 坑3: MDK 工程名拼写错误
+
+0-0 DebugConfig 里有个 "Tamplete"（拼错了），0-1 修正为 "Template"。
+这不影响编译，但说明从模板拷过来时要注意清理。
+
+========================================================================
+  二、STM32H5 vs F4 硬件差异
+========================================================================
+
+### 坑4: 外设基地址完全不一样！
+
+          STM32F4         STM32H562
+GPIOB    0x40020400  →   0x42020400
+RCC      0x40023800  →   0x44020C00
+
+STM32H5（Cortex-M33）的外设地址段比 F4 高很多。
+寄存器直接操作时（不通过 HAL 库）一定要注意基地址！
+HAL 库已经封装好了，用 HAL 函数就不需要关心。
+
+
+### 坑5: PB4 被 JTAG 占用，不能直接当 GPIO
+
+复位后 PB4 默认是 JTAG NJTRST 功能（AF0），不是普通 GPIO。
+如果要在 PB4 上点 LED（开发板的 LED0 就是 PB4），
+必须先释放 JTAG 调试引脚，只保留 SWD。
+
+正点原子视频 GPIO 实验章节会讲具体做法。
+简单说就是:
+  __HAL_RCC_AFIO_CLK_ENABLE();
+  __HAL_AFIO_REMAP_SWJ_NOJTAG();   // 释放 JTAG，保留 SWD
+
+
+### 坑6: LED 是共阳极接法
+
+LED0 = PB4（红色），LED1 = PB5（绿色）
+共阳极 → 输出 0 点亮，输出 1 熄灭
+跟日常直觉相反！写代码时注意。
+
+========================================================================
+  三、烧录与调试坑
+========================================================================
+
+### 坑7: SWD 接线（DAP 下载器）
+
+4 线接法:
+  GND → CLK → DIO
+  3V3 不接！(给外部供电可能会有问题)
+
+下载器: 正点原子 ATK DAP（CMSIS-DAP 协议）
+
+
+### 坑8: pyOCD 烧录命令
+
+pyocd flash --pack "<CMSIS-Pack路径>" -t stm32h562vitx <hex/elf文件>
+
+CMSIS-Pack 路径:
+  C:\Users\Dell\AppData\Local\stm32cube\packs\Keil\STM32H5xx_DFP\2.2.0
+
+pyOCD 安装（清华镜像）:
+  pip install pyocd -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+========================================================================
+  四、CMake + GCC 命令行工程坑
+========================================================================
+
+### 坑9: 工具链路径
+
+Windows 开发用 VS Code + CMake + arm-none-eabi-gcc + Ninja。
+CubeMX 自带了全套工具链，不用另外装:
+
+  CMake: C:\Users\Dell\AppData\Local\stm32cube\bundles\cmake\4.3.1+st.1\bin\cmake.exe
+  Ninja: C:\Users\Dell\AppData\Local\stm32cube\bundles\ninja\1.13.2+st.1\bin\ninja.exe
+  GCC:   C:\Users\Dell\AppData\Local\stm32cube\bundles\gnu-tools-for-stm32\14.3.1+st.2\bin\
+
+
+### 坑10: 启动文件选 armcc 还是 gcc？
+
+MDK (Keil):   用 arm/ 目录下的 startup_xxx.s（armclang 汇编器）
+GCC (CMake):  用 gcc/ 目录下的 startup_xxx.s（GNU 汇编器）
+
+两个语法不兼容！不能混用。
+
+
+### 坑11: CMake 工程链接脚本
+
+CMakeLists.txt 里要指定正确的 .ld 文件。
+STM32H562VITx 的 FLASH 和 RAM 大小:
+  FLASH: 2MB (起始 0x08000000)
+  SRAM:  640KB
+
+========================================================================
+  总结 Checklist（新建工程必查）
+========================================================================
+
+[ ] CubeMX 芯片型号选 STM32H562VIT6
+[ ] CMSIS 头文件是 stm32h562xx.h（不是 h563！）
+[ ] 启动文件是 startup_stm32h562xx.s
+[ ] stm32h5xx_hal_conf.h 所有用到的模块宏都取消了注释
+[ ] 如果 PB4 要点 LED，先释放 JTAG 引脚
+[ ] LED 共阳极，输出 0 亮、1 灭
+[ ] CMake 工程用 gcc/ 目录的启动文件，不用 arm/ 的
